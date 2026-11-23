@@ -26,6 +26,7 @@ import tempfile
 import time
 import wave
 from pathlib import Path
+from typing import Callable, Optional
 
 import requests
 
@@ -33,7 +34,11 @@ import requests
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 
 
-def load_api_key() -> str:
+Engine = Callable[[Path, Optional[str], Optional[int]], dict]
+ENGINES = ("auto", "local", "scribe")
+
+
+def find_api_key() -> str | None:
     for candidate in [Path(__file__).resolve().parent.parent / ".env", Path(".env")]:
         if candidate.exists():
             for line in candidate.read_text().splitlines():
@@ -41,12 +46,24 @@ def load_api_key() -> str:
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 k, v = line.split("=", 1)
-                if k.strip() == "ELEVENLABS_API_KEY":
+                if k.strip() == "ELEVENLABS_API_KEY" and v.strip().strip('"').strip("'"):
                     return v.strip().strip('"').strip("'")
-    v = os.environ.get("ELEVENLABS_API_KEY", "")
-    if not v:
-        sys.exit("ELEVENLABS_API_KEY not found in .env or environment")
-    return v
+    return os.environ.get("ELEVENLABS_API_KEY") or None
+
+
+def resolve_engine(name: str) -> tuple[str, Engine]:
+    if name == "auto":
+        name = "scribe" if find_api_key() else "local"
+    if name == "scribe":
+        api_key = find_api_key()
+        if not api_key:
+            sys.exit("ELEVENLABS_API_KEY not found in .env or environment; use --engine local")
+        return "scribe", lambda audio, language, num_speakers: call_scribe(
+            audio, api_key, language, num_speakers)
+    import local_stt
+
+    return local_stt.engine_name(), lambda audio, language, _num_speakers: local_stt.transcribe(
+        audio, language)
 
 
 def count_audio_tracks(video_path: Path) -> int:
@@ -128,7 +145,7 @@ def transcript_path(edit_dir: Path, video: Path, audio_track: int = 0) -> Path:
 def transcribe_one(
     video: Path,
     edit_dir: Path,
-    api_key: str,
+    engine: Engine,
     language: str | None = None,
     num_speakers: int | None = None,
     verbose: bool = True,
@@ -174,8 +191,8 @@ def transcribe_one(
 
         size_mb = audio.stat().st_size / (1024 * 1024)
         if verbose:
-            print(f"  uploading {video.stem}.wav ({size_mb:.1f} MB)", flush=True)
-        payload = call_scribe(audio, api_key, language, num_speakers)
+            print(f"  transcribing {video.stem}.wav ({size_mb:.1f} MB)", flush=True)
+        payload = engine(audio, language, num_speakers)
 
     out_path.write_text(json.dumps(payload, indent=2))
     dt = time.time() - t0
@@ -190,7 +207,7 @@ def transcribe_one(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Transcribe a video with ElevenLabs Scribe")
+    ap = argparse.ArgumentParser(description="Transcribe a video with local Whisper or ElevenLabs Scribe")
     ap.add_argument("video", type=Path, help="Path to video file")
     ap.add_argument(
         "--edit-dir",
@@ -218,6 +235,12 @@ def main() -> None:
              "and the mic on track 1; without this ffmpeg applies its default audio "
              "stream selection, which picks the track with the most channels.",
     )
+    ap.add_argument(
+        "--engine",
+        choices=ENGINES,
+        default="auto",
+        help="local = Whisper on this machine; scribe = ElevenLabs; auto = scribe when a key exists.",
+    )
     args = ap.parse_args()
 
     video = args.video.resolve()
@@ -225,12 +248,12 @@ def main() -> None:
         sys.exit(f"video not found: {video}")
 
     edit_dir = (args.edit_dir or (video.parent / "edit")).resolve()
-    api_key = load_api_key()
+    _, engine = resolve_engine(args.engine)
 
     transcribe_one(
         video=video,
         edit_dir=edit_dir,
-        api_key=api_key,
+        engine=engine,
         language=args.language,
         num_speakers=args.num_speakers,
         audio_track=args.audio_track,

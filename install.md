@@ -15,7 +15,7 @@ Three things must exist on this machine:
 
 1. The `video-use` repo cloned somewhere stable.
 2. `ffmpeg` on `$PATH` (plus optional `yt-dlp` for online sources).
-3. An ElevenLabs API key in `.env` at the repo root (for Scribe transcription).
+3. Nothing for transcription: local Whisper is the default. An ElevenLabs key in `.env` is optional and switches to Scribe.
 
 And one thing must be true about the current agent:
 
@@ -89,9 +89,9 @@ Figure out which agent you are running under, and register once. A symlink of th
 
 If you can't tell which agent you're in, ask the user once: "which agent am I running under — Claude Code, Codex, or something else?" Then pick the right target.
 
-### 5. ElevenLabs API key
+### 5. Transcription engine
 
-Scribe (ElevenLabs) does all transcription. Without a key, nothing transcribes.
+Local Whisper (`helpers/local_stt.py`) is the default and needs no key. `uv sync` installs mlx-whisper on Apple Silicon, and faster-whisper plus pip CUDA libraries on Linux x86_64. The model (about 1.6 GB) downloads on first use. Do not ask the user for an ElevenLabs key. Do the steps below only when the user wants Scribe for diarization or audio events.
 
 1. Check existing state in this order and stop at the first hit:
 

@@ -20,7 +20,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from transcribe import load_api_key, transcribe_one, transcript_path
+from transcribe import ENGINES, resolve_engine, transcribe_one, transcript_path
 
 
 VIDEO_EXTS = {".mp4", ".MP4", ".mov", ".MOV", ".mkv", ".MKV", ".avi", ".AVI", ".m4v"}
@@ -62,6 +62,12 @@ def main() -> None:
         default=0,
         help="Zero-based audio track to transcribe (OBS: 0 = game, 1 = mic).",
     )
+    ap.add_argument(
+        "--engine",
+        choices=ENGINES,
+        default="auto",
+        help="local = Whisper on this machine; scribe = ElevenLabs; auto = scribe when a key exists.",
+    )
     args = ap.parse_args()
 
     videos_dir = args.videos_dir.resolve()
@@ -84,19 +90,20 @@ def main() -> None:
         print("nothing to do")
         return
 
-    api_key = load_api_key()
+    engine_label, engine = resolve_engine(args.engine)
+    workers = args.workers if engine_label == "scribe" else 1
 
-    print(f"transcribing {len(pending)} files with {args.workers} parallel workers")
+    print(f"transcribing {len(pending)} files with {engine_label}, {workers} worker(s)")
     t0 = time.time()
 
     errors: list[tuple[Path, str]] = []
-    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
             pool.submit(
                 transcribe_one,
                 video=v,
                 edit_dir=edit_dir,
-                api_key=api_key,
+                engine=engine,
                 language=args.language,
                 num_speakers=args.num_speakers,
                 verbose=False,

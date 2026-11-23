@@ -10,6 +10,10 @@ dependencies = [
     "matplotlib",
     "pillow",
     "numpy",
+    "mlx-whisper; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "faster-whisper; sys_platform != 'darwin' or platform_machine != 'arm64'",
+    "nvidia-cublas-cu12; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "nvidia-cudnn-cu12>=9,<10; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [project.optional-dependencies]
