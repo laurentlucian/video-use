@@ -125,6 +125,8 @@ def extract_segment(
     out_path: Path,
 ) -> None:
     vf = [TONEMAP_CHAIN] if is_hdr_source(cut.path) else []
+    if cut.freeze_head > 0:
+        vf.append(f"trim=start={cut.freeze_head:.6f},setpts=PTS-STARTPTS,tpad=start_duration={cut.freeze_head:.6f}:start_mode=clone")
     vf.append(frame_filter(cut, size))
     if grade_filter:
         vf.append(grade_filter)

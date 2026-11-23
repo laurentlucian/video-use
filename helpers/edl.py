@@ -56,6 +56,7 @@ class Cut:
     zoom: float
     anchor: tuple[float, float]
     reframes: tuple[Reframe, ...]
+    freeze_head: float
     note: str
 
     @property
@@ -111,6 +112,13 @@ def parse_reframes(value: object, duration: float, where: str) -> tuple[Reframe,
     return tuple(reframes)
 
 
+def parse_freeze(value: object, duration: float, where: str) -> float:
+    freeze = float(value) if value is not None else 0.0
+    if not 0.0 <= freeze < duration:
+        sys.exit(f"{where}: freeze_head_s must be >= 0 and shorter than the range")
+    return freeze
+
+
 def edl_fps(edl: dict) -> Fraction:
     value = edl.get("fps")
     if value is None:
@@ -142,6 +150,7 @@ def plan_cuts(edl: dict, edit_dir: Path) -> list[Cut]:
             zoom=parse_zoom(r.get("zoom"), where),
             anchor=parse_anchor(r.get("anchor"), where),
             reframes=parse_reframes(r.get("reframes"), float(frames / fps), where),
+            freeze_head=parse_freeze(r.get("freeze_head_s"), float(frames / fps), where),
             note=r.get("beat") or r.get("note") or "",
         ))
         offset += frames
