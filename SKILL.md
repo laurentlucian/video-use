@@ -23,7 +23,7 @@ These are the things where deviation produces silent failures or broken output. 
 2. **Per-segment extract → lossless `-c copy` concat**, not single-pass filtergraph. Otherwise you double-encode every segment when overlays are added.
 3. **30ms audio fades at every segment boundary** (`afade=t=in:st=0:d=0.03,afade=t=out:st={dur-0.03}:d=0.03`). Otherwise audible pops at every cut.
 4. **Overlays use `setpts=PTS-STARTPTS+T/TB`** to shift the overlay's frame 0 to its window start. Otherwise you see the middle of the animation during the overlay window.
-5. **Master SRT uses output-timeline offsets**: `output_time = word.start - segment_start + segment_offset`. Otherwise captions misalign after segment concat.
+5. **Captions use output-timeline offsets**: `output_time = word.start - segment_start + segment_offset`, with every segment snapped to whole output frames. `render.py --style` does this; hand-built captions must too. Otherwise captions misalign after segment concat.
 6. **Never cut inside a word.** Snap every cut edge to a word boundary from the Scribe transcript.
 7. **Pad every cut edge.** Working window: 30–200ms. Scribe timestamps drift 50–100ms — padding absorbs the drift. Tighter for fast-paced, looser for cinematic.
 8. **Word-level verbatim ASR only.** Never SRT/phrase mode (loses sub-second gap data). Never normalized fillers (loses editorial signal).
@@ -47,8 +47,8 @@ The skill lives in `video-use/`. User footage lives wherever they put it. All se
     ├── edl.json                 ← cut decisions
     ├── transcripts/<name>.json  ← cached raw Scribe JSON
     ├── animations/slot_<id>/    ← per-animation source + render + reasoning
-    ├── clips_graded/            ← per-segment extracts with grade + fades
-    ├── master.srt               ← output-timeline subtitles
+    ├── clips_graded/            ← per-segment extracts with grade + fades (next to the render output)
+    ├── captions.ass             ← output-timeline captions (written by render.py --style)
     ├── downloads/               ← yt-dlp outputs
     ├── verify/                  ← debug frames / timeline PNGs
     ├── preview.mp4
@@ -75,8 +75,9 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`transcribe_batch.py <videos_dir>`** — whole-folder transcription. Scribe runs 4 parallel workers; local runs one file at a time on the GPU. Use for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
 - **`export_transcript.py <edit_dir>/transcripts/<name>.json`** — writes `<edit_dir>/exports/<name>.words.json` and `<name>.srt` (natural case). Hand these to ffmpeg-skill (`silence.py --words`, `caption.py --srt`) instead of transcribing again. Times follow the transcribed file: after a cut, run `transcribe.py` on the cut file and export again before captioning.
-- **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
-- **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
+- **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly. Word labels come from `--transcript <file>`, else `<transcripts-dir>/<video_stem>.json` (`--transcripts-dir`, default `<edit-dir>/transcripts`, `--edit-dir` default `<video_parent>/edit`).
+- **`onsets.py <video> <transcript.json> [--start S --end E]`** — prints each word's start refined to the real audio onset. Local Whisper often stamps a word at the start of the pause before it (e.g. 16.56 s for a word spoken at 16.89 s). Plan cuts from the refined times. In code: `onsets.refine_range(video, words, start, end)`.
+- **`render.py <edl.json> -o <out>`** — frame-snapped per-segment extract (crop on the full-res source → scale, CFR) → concat → overlays (trimmed to their window) → captions LAST → loudnorm. `--style <style.json>` burns word-by-word ASS captions (bare `--style` = `styles/default.json`). `--transcripts-dir <dir>` (default `<edl_dir>/transcripts`). `--no-refine-onsets` keeps raw word starts. `--preview` / `--draft` for faster passes. Intermediates (`clips_graded/`, `base.mp4`, `captions.ass`) go next to `<out>`.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
 
 For animations, create `<edit>/animations/slot_<id>/` with `Bash` and spawn a sub-agent via the `Agent` tool.
@@ -182,22 +183,31 @@ Hard rules: apply **per-segment during extraction** (not post-concat, which re-e
 
 ## Subtitles (when requested)
 
-Subtitles have three dimensions worth reasoning about: **chunking** (1/2/3/sentence per line), **case** (UPPER/Title/Natural), and **placement** (margin from bottom). The right combo depends on content.
+Captions have three dimensions worth reasoning about: **chunking** (1/2/3/sentence per cue), **case** (UPPER/Title/Natural), and **placement**. The right combo depends on content.
 
-**Worked styles** — pick, adapt, or invent:
+`render.py --style <style.json>` is the one caption path. It writes `captions.ass` from the transcripts and the frame-snapped cuts, then burns it LAST:
 
-**`bold-overlay`** — short-form tech launch, fast-paced social. ~2-word chunks, UPPERCASE, break on punctuation and pauses ≥ 0.3s, grow to 3 words rather than flash a cue < 0.35s (`chunk_words` in `render.py`), Helvetica 18 Bold, white-on-outline, `MarginV=35`. `render.py` ships with this as `SUB_FORCE_STYLE`.
+- Word-by-word: each cue holds up to `words_max` words and breaks on punctuation, on pauses ≥ 0.3 s, and when the next word would pass `max_width`. The active word takes `active_color` and `active_scale`; each cue pops in from `pop_from` scale over `pop_ms`.
+- Word starts are refined to the audio onset (`onsets.py`), so the highlight lands on the voice, not on the pause before it.
+- EDL `replacements` fix ASR spellings in captions, whole word, case-insensitive: `{"Laude": "LOUD"}`.
+- The caption font file is passed to libass (`fontsdir`), so a font that is not installed still renders. The renderer reads the face name and weight from the file itself.
 
+The style JSON is shared with motion graphics (Remotion overlays). Units are px on the `canvas`, fractions of canvas width/height, `#RRGGBB`, ms. `styles/default.json` is a worked example (Montserrat Black 96, white, 8 px outline, green active word, y = 0.64). Font paths are relative to the style file:
+
+```json
+{
+  "canvas": {"w": 1080, "h": 1920, "fps": 30},
+  "colors": {"accent": "#00EE22", "dark": "#151515", "light": "#F0EFED", "text": "#FFFFFF", "outline": "#000000"},
+  "fonts": {"caption": {"family": "Montserrat", "file": "assets/fonts/Montserrat-Black.ttf", "weight": 900}},
+  "captions": {
+    "size": 96, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
+    "outline": 8, "shadow": 4, "shadow_alpha": 0.6,
+    "active_color": "#00EE22", "active_scale": 1.1, "pop_ms": 100, "pop_from": 0.8
+  }
+}
 ```
-FontName=Helvetica,FontSize=18,Bold=1,
-PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BackColour=&H00000000,
-BorderStyle=1,Outline=2,Shadow=0,
-Alignment=2,MarginV=35
-```
 
-**`natural-sentence`** (if you invent this mode) — narrative, documentary, education. 4–7 word chunks, sentence case, break on natural pauses, `MarginV=60–80`, larger font for readability, slightly wider max-width. No shipped force_style — design one if you need it.
-
-Invent a third style if neither fits. Hard rules: subtitles LAST (Rule 1), output-timeline offsets (Rule 5).
+For narrative or documentary work, copy the style and change it: natural case, `words_max` 5–7, `active_color` equal to `text`, `pop_ms` 0. Vertical-social UI covers the bottom ~25% of the frame, so keep `y` ≤ ~0.7. Hard rules: captions LAST (Rule 1), output-timeline offsets (Rule 5).
 
 ## Animations (when requested)
 
@@ -282,30 +292,36 @@ Sound is where generated videos sound cheap. Worked rules from launch edits:
 
 ## Output spec
 
-Match the source unless the user asked for something specific. Common targets: `1920×1080@24` cinematic, `1920×1080@30` screen content, `1080×1920@30` vertical social, `3840×2160@24` 4K cinema, `1080×1080@30` square. `render.py` defaults the scale to 1080p from any source; pass `--filter` or edit the extract command for other targets. Worth asking the user which delivery format matters.
+Match the source unless the user asked for something specific. Common targets: `1920×1080@24` cinematic, `1920×1080@30` screen content, `1080×1920@30` vertical social, `3840×2160@24` 4K cinema, `1080×1080@30` square. `render.py` outputs the first source's aspect at 1920 on the long side (1280 in `--draft`), constant frame rate: 30 fps unless the EDL sets `"fps"`. Phone footage is variable frame rate (e.g. 29.83); the CFR output fixes that. Worth asking the user which delivery format matters.
 
 ## EDL format
 
 ```json
 {
   "version": 1,
+  "fps": 30,
   "sources": {"C0103": "/abs/path/C0103.MP4", "C0108": "/abs/path/C0108.MP4"},
   "ranges": [
     {"source": "C0103", "start": 2.42, "end": 6.85,
      "beat": "HOOK", "quote": "...", "reason": "Cleanest delivery, stops before slip at 38.46."},
-    {"source": "C0108", "start": 14.30, "end": 28.90,
+    {"source": "C0108", "start": 14.30, "end": 28.90, "zoom": 1.25, "anchor": [0.5, 0.4],
      "beat": "SOLUTION", "quote": "...", "reason": "Only take without the false start."}
   ],
   "grade": "warm_cinematic",
+  "audio_filter": "highpass=f=80,acompressor=threshold=-20dB:ratio=2.5",
+  "replacements": {"Laude": "LOUD"},
   "overlays": [
-    {"file": "edit/animations/slot_1/render.mp4", "start_in_output": 0.0, "duration": 5.0}
-  ],
-  "subtitles": "edit/master.srt",
-  "total_duration_s": 87.4
+    {"file": "animations/slot_1/render.mov", "start_in_output": 0.0, "duration": 5.0},
+    {"file": "animations/logo.png", "start_in_output": 80.0, "position": [0.5, 0.15], "scale": 0.5}
+  ]
 }
 ```
 
-`grade` is a preset name or raw ffmpeg filter. `overlays` are rendered animation clips. `subtitles` is optional and applied LAST.
+- `fps`: output frame rate (default 30, CFR). Each range's length snaps to whole frames (`round((end - start) * fps)`), so total duration is exact and A/V sync holds to the last segment.
+- `zoom` (default 1.0) punches in per range; it crops the full-res source, then scales, so a 1.35 zoom on 4K footage never upscales. `anchor` is the source point (fractions, default `[0.5, 0.5]`) that the crop centres on, clamped to the frame.
+- `grade` is a preset name, a raw ffmpeg filter, or `auto`. `audio_filter` is an ffmpeg audio chain applied per segment before the fades.
+- `replacements` applies to caption text only.
+- `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size.
 
 ## Memory — `project.md`
 
