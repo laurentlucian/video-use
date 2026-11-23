@@ -26,7 +26,6 @@ PHRASE_PAUSE_S = 0.3
 MERGE_PAUSE_S = 0.6
 EDGE_OVERLAP_S = 0.06
 MIN_WORD_S = 0.08
-MIN_VISIBLE_S = 0.2
 HOLD_S = 1.0
 
 Window = tuple[float, float]
@@ -112,6 +111,7 @@ class CaptionStyle:
     pop_ms: int
     pop_from: float
     end_strip: str
+    min_visible: float
 
     @property
     def fonts_dir(self) -> Path:
@@ -172,6 +172,7 @@ def load_style(path: Path) -> CaptionStyle:
         pop_ms=int(c.get("pop_ms", 0)),
         pop_from=float(c.get("pop_from", 1.0)),
         end_strip=end_strip_chars(c, case),
+        min_visible=int(c.get("min_visible_ms", 200)) / 1000,
     )
 
 
@@ -277,11 +278,11 @@ class Layout:
         return texts, [(0, len(texts))], int(self.style.size * self.limit / self.width(line))
 
 
-def visible(span: Window, hidden: list[Window]) -> list[Window]:
+def visible(span: Window, hidden: list[Window], min_s: float) -> list[Window]:
     pieces = [span]
     for hs, he in hidden:
         pieces = [p for s, e in pieces for p in ((s, min(e, hs)), (max(s, he), e)) if p[1] > p[0]]
-    return [p for p in pieces if p == span or p[1] - p[0] >= MIN_VISIBLE_S]
+    return [p for p in pieces if p[1] - p[0] >= min_s]
 
 
 def scale_tag(scale: float, pop: bool, style: CaptionStyle) -> str:
@@ -338,6 +339,7 @@ def build_ass(
     layout = Layout(style)
     total = cuts[-1].offset + cuts[-1].duration if cuts else 0.0
     words = replace_phrases(output_words(cuts, transcripts_dir, refine, style.case, replacer(replacements)), replacements)
+    words = [w for w in words if not any(hs <= w["start"] < he for hs, he in hidden)]
     cues = chunk_words(words, style.words_min, style.words_max, layout.fits)
 
     lines = [
@@ -363,7 +365,7 @@ def build_ass(
 
     def emit(a: float, b: float, texts: list[str], spans: list[tuple[int, int]], fs: int, active: int | None) -> None:
         nonlocal events, dropped
-        pieces = visible((a, b), hidden)
+        pieces = visible((a, b), hidden, style.min_visible)
         dropped += not pieces
         head = rf"\an5\fs{fs}\fsp{style.tracking * fs * style.em_scale:.2f}"
         for pa, pb in pieces:
