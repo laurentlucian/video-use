@@ -305,6 +305,27 @@ def cue_body(texts: list[str], spans: list[tuple[int, int]], style: CaptionStyle
     return lead + r"\N".join(" ".join(word(j) for j in range(a, b)) for a, b in spans)
 
 
+def replace_phrases(words: list[dict], replacements: dict[str, str]) -> list[dict]:
+    phrases = sorted(
+        ((k.lower().split(), v.split()) for k, v in replacements.items() if len(k.split()) > 1),
+        key=lambda kv: len(kv[0]), reverse=True,
+    )
+    for key, value in phrases:
+        if len(key) != len(value):
+            sys.exit(f"replacement '{' '.join(key)}' → '{' '.join(value)}': phrase replacements need the same word count")
+    out = [dict(w) for w in words]
+    bare = [w["display"].strip(END_PUNCTUATION).lower() for w in out]
+    for key, value in phrases:
+        for i in range(len(out) - len(key) + 1):
+            if bare[i:i + len(key)] == key:
+                for j, token in enumerate(value):
+                    w = out[i + j]
+                    core = w["display"].strip(END_PUNCTUATION)
+                    w["display"] = w["display"].replace(core, token, 1)
+                    bare[i + j] = token.lower()
+    return out
+
+
 def build_ass(
     cuts: list[Cut],
     transcripts_dir: Path,
@@ -316,7 +337,7 @@ def build_ass(
 ) -> int:
     layout = Layout(style)
     total = cuts[-1].offset + cuts[-1].duration if cuts else 0.0
-    words = output_words(cuts, transcripts_dir, refine, style.case, replacer(replacements))
+    words = replace_phrases(output_words(cuts, transcripts_dir, refine, style.case, replacer(replacements)), replacements)
     cues = chunk_words(words, style.words_min, style.words_max, layout.fits)
 
     lines = [
