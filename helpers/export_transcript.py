@@ -6,15 +6,16 @@ import re
 import sys
 from pathlib import Path
 
-from render import _srt_timestamp, chunk_words
+from captions import chunk_words
+from transcripts import spoken_words
 
 
-def spoken_words(transcript: dict) -> list[dict]:
-    return [
-        w for w in transcript.get("words", [])
-        if w.get("type", "word") == "word" and (w.get("text") or "").strip()
-        and w.get("start") is not None and w.get("end") is not None
-    ]
+def srt_timestamp(seconds: float) -> str:
+    total_ms = int(round(seconds * 1000))
+    h, rem = divmod(total_ms, 3600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 
 def srt_text(words: list[dict]) -> str:
@@ -22,7 +23,7 @@ def srt_text(words: list[dict]) -> str:
     for i, chunk in enumerate(chunk_words(words), start=1):
         start, end = chunk[0]["start"], max(chunk[-1]["end"], chunk[0]["start"] + 0.4)
         text = re.sub(r"\s+", " ", " ".join(w["text"].strip() for w in chunk)).strip()
-        lines += [str(i), f"{_srt_timestamp(start)} --> {_srt_timestamp(end)}", text, ""]
+        lines += [str(i), f"{srt_timestamp(start)} --> {srt_timestamp(end)}", text, ""]
     return "\n".join(lines)
 
 
