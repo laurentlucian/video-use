@@ -5,7 +5,7 @@ import math
 import re
 import sys
 from dataclasses import dataclass
-from itertools import combinations
+from itertools import combinations, pairwise
 from pathlib import Path
 from typing import Callable
 
@@ -59,17 +59,49 @@ def merge_short(phrases: list[Cue], words_min: int) -> list[Cue]:
     return groups
 
 
-def split_even(group: Cue, words_max: int, fits: Callable[[Cue], bool]) -> list[Cue]:
-    n = math.ceil(len(group) / words_max)
-    while True:
-        size, extra = divmod(len(group), n)
-        bounds = [0]
-        for i in range(n):
-            bounds.append(bounds[-1] + size + (i < extra))
-        parts = [group[a:b] for a, b in zip(bounds, bounds[1:])]
-        if n == len(group) or all(fits(p) for p in parts):
-            return parts
-        n += 1
+PART_COST = 100.0
+WEAK_END_COST = 150.0
+
+
+def bare(w: dict) -> str:
+    return w["text"].strip().strip(END_PUNCTUATION).lower()
+
+
+def split_even(
+    group: Cue,
+    words_max: int,
+    fits: Callable[[Cue], bool],
+    weak_ends: frozenset[str] = frozenset(),
+) -> list[Cue]:
+    n = len(group)
+    target = n / math.ceil(n / words_max)
+    best: list[tuple[float, int] | None] = [(0.0, 0)] + [None] * n
+    for i in range(1, n + 1):
+        for j in range(max(0, i - words_max), i):
+            part = group[j:i]
+            if best[j] is None or (len(part) > 1 and not fits(part)):
+                continue
+            cost = best[j][0] + PART_COST + (len(part) - target) ** 2
+            if i < n and bare(part[-1]) in weak_ends:
+                cost += WEAK_END_COST
+            if best[i] is None or cost < best[i][0]:
+                best[i] = (cost, j)
+    bounds = [n]
+    while bounds[-1] > 0:
+        bounds.append(best[bounds[-1]][1])
+    bounds.reverse()
+    return [group[a:b] for a, b in pairwise(bounds)]
+
+
+def shown_words(words: list[dict], hidden: list[Window], weak_ends: frozenset[str]) -> list[dict]:
+    keep = [not any(hs <= w["start"] < he for hs, he in hidden) for w in words]
+    for i in range(len(words) - 1):
+        if keep[i] and not keep[i + 1]:
+            j = i
+            while j >= 0 and keep[j] and bare(words[j]) in weak_ends:
+                keep[j] = False
+                j -= 1
+    return [w for w, k in zip(words, keep) if k]
 
 
 def chunk_words(
@@ -77,10 +109,11 @@ def chunk_words(
     words_min: int = 1,
     words_max: int = 3,
     fits: Callable[[Cue], bool] = lambda cue: True,
+    weak_ends: frozenset[str] = frozenset(),
 ) -> list[Cue]:
     words = [w for w in words if (w.get("text") or "").strip()]
     groups = merge_short(split_phrases(words), words_min)
-    return [cue for g in groups for cue in split_even(g, words_max, fits)]
+    return [cue for g in groups for cue in split_even(g, words_max, fits, weak_ends)]
 
 
 @dataclass(frozen=True)
@@ -112,6 +145,11 @@ class CaptionStyle:
     pop_from: float
     end_strip: str
     min_visible: float
+    weak_ends: frozenset[str]
+
+    @property
+    def ass_size(self) -> int:
+        return round(self.size / self.em_scale)
 
     @property
     def fonts_dir(self) -> Path:
@@ -173,6 +211,7 @@ def load_style(path: Path) -> CaptionStyle:
         pop_from=float(c.get("pop_from", 1.0)),
         end_strip=end_strip_chars(c, case),
         min_visible=int(c.get("min_visible_ms", 200)) / 1000,
+        weak_ends=frozenset(w.lower() for w in c.get("weak_ends", [])),
     )
 
 
@@ -234,15 +273,15 @@ def output_words(
                 continue
             start = cut.to_output(max(cut.start, w["start"]))
             end = cut.to_output(min(cut.end, w["end"]))
-            words.append({"text": w["text"], "display": text, "start": start, "end": max(end, start + MIN_WORD_S)})
+            words.append({"text": w["text"], "display": text, "start": start, "end": max(end, start + MIN_WORD_S), "y": cut.caption_y})
     return words
 
 
 class Layout:
     def __init__(self, style: CaptionStyle):
         self.style = style
-        self.font = ImageFont.truetype(str(style.font_file), style.size * style.em_scale)
-        self.spacing = style.tracking * style.size * style.em_scale
+        self.font = ImageFont.truetype(str(style.font_file), style.size)
+        self.spacing = style.tracking * style.size
         self.limit = style.max_width * style.canvas_w
 
     def width(self, text: str) -> float:
@@ -258,7 +297,7 @@ class Layout:
             best: tuple[float, list[tuple[int, int]]] | None = None
             for breaks in combinations(range(1, len(texts)), k - 1):
                 bounds = (0, *breaks, len(texts))
-                spans = list(zip(bounds, bounds[1:]))
+                spans = list(pairwise(bounds))
                 widest = max(self.width(" ".join(texts[a:b])) for a, b in spans)
                 if widest <= self.limit and (best is None or widest < best[0]):
                     best = (widest, spans)
@@ -273,9 +312,9 @@ class Layout:
         texts = self.texts(cue)
         spans = self.lines(texts)
         if spans is not None:
-            return texts, spans, self.style.size
+            return texts, spans, self.style.ass_size
         line = " ".join(texts)
-        return texts, [(0, len(texts))], int(self.style.size * self.limit / self.width(line))
+        return texts, [(0, len(texts))], int(self.style.ass_size * self.limit / self.width(line))
 
 
 def visible(span: Window, hidden: list[Window], min_s: float) -> list[Window]:
@@ -339,8 +378,8 @@ def build_ass(
     layout = Layout(style)
     total = cuts[-1].offset + cuts[-1].duration if cuts else 0.0
     words = replace_phrases(output_words(cuts, transcripts_dir, refine, style.case, replacer(replacements)), replacements)
-    words = [w for w in words if not any(hs <= w["start"] < he for hs, he in hidden)]
-    cues = chunk_words(words, style.words_min, style.words_max, layout.fits)
+    words = shown_words(words, hidden, style.weak_ends)
+    cues = chunk_words(words, style.words_min, style.words_max, layout.fits, style.weak_ends)
 
     lines = [
         "[Script Info]", "ScriptType: v4.00+",
@@ -350,21 +389,22 @@ def build_ass(
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, "
         "Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, "
         "Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-        f"Style: Default,{style.face},{style.size},{ass_color(style.text_color)},{ass_color(style.text_color)},"
+        f"Style: Default,{style.face},{style.ass_size},{ass_color(style.text_color)},{ass_color(style.text_color)},"
         f"{ass_color(style.outline_color)},{ass_color(style.outline_color)},{style.weight},0,0,0,100,100,0,0,1,"
         f"{style.outline:g},0,5,0,0,0,1",
         "", "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    x, y = round(style.x * style.canvas_w), round(style.y * style.canvas_h)
+    x = round(style.x * style.canvas_w)
     shadowed = style.shadow_alpha > 0 and (style.shadow > 0 or style.shadow_blur > 0)
     shade = (rf"\1c{tag_color(style.outline_color)}\3c{tag_color(style.outline_color)}"
              rf"\1a{tag_alpha(style.shadow_alpha)}\3a{tag_alpha(style.shadow_alpha)}\blur{style.shadow_blur / 2:g}")
     events = 0
     dropped = 0
 
-    def emit(a: float, b: float, texts: list[str], spans: list[tuple[int, int]], fs: int, active: int | None) -> None:
+    def emit(a: float, b: float, texts: list[str], spans: list[tuple[int, int]], fs: int, active: int | None, cue_y: float | None) -> None:
         nonlocal events, dropped
+        y = round((style.y if cue_y is None else cue_y) * style.canvas_h)
         pieces = visible((a, b), hidden, style.min_visible)
         dropped += not pieces
         head = rf"\an5\fs{fs}\fsp{style.tracking * fs * style.em_scale:.2f}"
@@ -386,10 +426,10 @@ def build_ass(
         cue_end = min(next_start, cue[-1]["end"] + HOLD_S, total)
         texts, spans, fs = layout.place(cue)
         if style.active_color is None:
-            emit(cue[0]["start"], cue_end, texts, spans, fs, None)
+            emit(cue[0]["start"], cue_end, texts, spans, fs, None, cue[0].get("y"))
             continue
         for wi, w in enumerate(cue):
-            emit(w["start"], cue[wi + 1]["start"] if wi + 1 < len(cue) else cue_end, texts, spans, fs, wi)
+            emit(w["start"], cue[wi + 1]["start"] if wi + 1 < len(cue) else cue_end, texts, spans, fs, wi, cue[0].get("y"))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines) + "\n")

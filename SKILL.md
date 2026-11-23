@@ -187,16 +187,16 @@ Captions have three dimensions worth reasoning about: **chunking** (1/2/3/senten
 
 `render.py --style <style.json>` is the one caption path. It writes `captions.ass` from the transcripts and the frame-snapped cuts, then burns it LAST:
 
-- Chunking: the transcript splits into phrases at punctuation and at pauses ≥ 0.3 s. A phrase shorter than `words_min` merges with its neighbour when the gap is under 0.6 s. Each group then splits evenly into cues of at most `words_max` words, and each cue lays out on at most `lines_max` lines of `max_width` (most balanced break). A cue that cannot fit shrinks.
+- Chunking: the transcript splits into phrases at punctuation and at pauses ≥ 0.3 s. A phrase shorter than `words_min` merges with its neighbour when the gap is under 0.6 s. Each group then splits into cues of at most `words_max` words, as even as possible, and never ends a cue mid-group on a word listed in the style's `weak_ends` (articles, prepositions, "pra", "é só"…) when another split exists; and each cue lays out on at most `lines_max` lines of `max_width` (most balanced break). A cue that cannot fit shrinks.
 - Two modes. `active_color` set: the spoken word takes `active_color` and `active_scale` (word-by-word karaoke). `active_color` null or absent: each cue is a plain line, no per-word colour or scale. Each cue pops in from `pop_from` scale over `pop_ms`. Cue centre: `x` (default 0.5), `y`.
 - Look: `outline` px; `shadow` (offset down, px), `shadow_blur` (CSS-style px), `shadow_alpha`. The shadow is its own ASS layer under the text, so the blur never softens the fill. Font `tracking` (em fraction) maps to ASS letter spacing.
 - Punctuation: quotes and ASS control characters are always removed. `strip_end_punctuation` (default true for `case: "lower"`) removes `. , ; : ! ? …` at the end of each cue; mid-cue commas stay. `end_punctuation_keep: "?"` keeps question marks.
-- Overlays hide captions: every EDL overlay clips captions out of its window, unless the overlay sets `"hide_captions": false` (use that for text-free b-roll). Words that start under a caption-hiding overlay are dropped before chunking, so the next cue starts on the first word after the overlay instead of showing late. A cue that runs into an overlay ends at the overlay start. Any cue piece shorter than the style's `min_visible_ms` (default 200) is not shown.
+- Overlays hide captions: every EDL overlay clips captions out of its window, unless the overlay sets `"hide_captions": false` (use that for text-free b-roll). Words that start under a caption-hiding overlay are dropped before chunking, together with any `weak_ends` words left dangling right before the overlay, so the next cue starts on the first word after the overlay instead of showing late. A cue that runs into an overlay ends at the overlay start. Any cue piece shorter than the style's `min_visible_ms` (default 200) is not shown.
 - Word starts are refined to the audio onset (`onsets.py`), so cues land on the voice, not on the pause before it.
 - EDL `replacements` fix ASR spellings in captions, whole word, case-insensitive, applied after `case` so proper names keep their case: `{"Laude": "LOUD", "LOUD": "LOUD"}`.
 - The caption font file is passed to libass (`fontsdir`), so a font that is not installed still renders. The renderer reads the face name and weight from the file itself.
 
-The style JSON is shared with motion graphics (Remotion overlays). Units are px on the `canvas`, fractions of canvas width/height, `#RRGGBB`, ms. `styles/default.json` is a worked example (Montserrat Black 96, white, 8 px outline, green active word, y = 0.64). Font paths are relative to the style file:
+The style JSON is shared with motion graphics (Remotion overlays). Units are px on the `canvas` (caption `size` is the em size, as CSS `font-size`; the renderer converts it to the libass font height), fractions of canvas width/height, `#RRGGBB`, ms. `styles/default.json` is a worked example (Montserrat Black 61 px em, white, 8 px outline, green active word, y = 0.64). Font paths are relative to the style file:
 
 ```json
 {
@@ -204,7 +204,7 @@ The style JSON is shared with motion graphics (Remotion overlays). Units are px 
   "colors": {"accent": "#00EE22", "dark": "#151515", "light": "#F0EFED", "text": "#FFFFFF", "outline": "#000000"},
   "fonts": {"caption": {"family": "Montserrat", "file": "assets/fonts/Montserrat-Black.ttf", "weight": 900}},
   "captions": {
-    "size": 96, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
+    "size": 61, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
     "outline": 8, "shadow": 4, "shadow_alpha": 0.6,
     "active_color": "#00EE22", "active_scale": 1.1, "pop_ms": 100, "pop_from": 0.8
   }
@@ -333,6 +333,7 @@ Match the source unless the user asked for something specific. Common targets: `
 - `grade` is a preset name, a raw ffmpeg filter, or `auto`. `audio_filter` is an ffmpeg audio chain applied per segment before the fades.
 - `reframes` (optional, per range) are smooth zoom moves inside the range: each eases (cubic in-out) from the current zoom to `zoom` over `ms` (default 450), starting `at_s` seconds into the range. The range `zoom` is the starting value. Moves must not overlap. Use them for reframes and emphasis pushes; keep snap `zoom` changes for jump cuts.
 - `freeze_head_s` (optional, per range) holds the frame at `start + freeze_head_s` for the first `freeze_head_s` seconds while the audio plays from `start`. Use it when the first frames are motion-blurred but trimming the head would clip the first word; sync is exact after the hold.
+- `caption_y` (optional, per range) moves the caption centre for that range (fraction of the height), e.g. below a shirt print on closer shots.
 - `replacements` applies to caption text only. A key with spaces replaces a run of words (same word count on both sides), e.g. `{"streamer do zero": "Streamer do Zero"}`.
 - `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size. `hide_captions` (default `true`) clips captions out of the overlay window; set `false` for text-free b-roll. A video overlay without `duration` lasts its own clip length. `blur_base: {px, ramp_ms}` blurs the base video (gaussian sigma `px`) under that overlay's window, crossfading in and out over `ramp_ms`, before any overlay is drawn.
 - `music` is a bed mixed under the voice: `file`, `start_s` (offset into the track), `gain_db`, `fade_in_ms`, `fade_out_ms`. `automation` is a list of `{at_s, gain_db}` keyframes on the output timeline; the gain ramps linearly between them, starting from `gain_db` at 0 s, and holds after the last one (use it for swells). `duck: {under_voice_db, attack_ms, release_ms}` sidechain-ducks the bed by about `under_voice_db` while the voice plays.

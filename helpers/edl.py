@@ -57,6 +57,7 @@ class Cut:
     anchor: tuple[float, float]
     reframes: tuple[Reframe, ...]
     freeze_head: float
+    caption_y: float | None
     note: str
 
     @property
@@ -119,6 +120,15 @@ def parse_freeze(value: object, duration: float, where: str) -> float:
     return freeze
 
 
+def parse_caption_y(value: object, where: str) -> float | None:
+    if value is None:
+        return None
+    y = float(value)
+    if not 0.0 < y < 1.0:
+        sys.exit(f"{where}: caption_y must be a fraction of the frame height")
+    return y
+
+
 def edl_fps(edl: dict) -> Fraction:
     value = edl.get("fps")
     if value is None:
@@ -151,6 +161,7 @@ def plan_cuts(edl: dict, edit_dir: Path) -> list[Cut]:
             anchor=parse_anchor(r.get("anchor"), where),
             reframes=parse_reframes(r.get("reframes"), float(frames / fps), where),
             freeze_head=parse_freeze(r.get("freeze_head_s"), float(frames / fps), where),
+            caption_y=parse_caption_y(r.get("caption_y"), where),
             note=r.get("beat") or r.get("note") or "",
         ))
         offset += frames

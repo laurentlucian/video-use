@@ -6,7 +6,7 @@
     "display": {"family": "Montserrat", "file": "assets/fonts/Montserrat-ExtraBold.ttf", "weight": 800}
   },
   "captions": {
-    "size": 96, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
+    "size": 61, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
     "outline": 8, "shadow": 4, "shadow_alpha": 0.6,
     "active_color": "#00EE22", "active_scale": 1.1, "strip_end_punctuation": true,
     "pop_ms": 100, "pop_from": 0.8,
