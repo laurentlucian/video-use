@@ -38,6 +38,13 @@ def resolve_path(maybe_path: str, base: Path) -> Path:
 
 
 @dataclass(frozen=True)
+class Reframe:
+    at: float
+    zoom: float
+    ms: int
+
+
+@dataclass(frozen=True)
 class Cut:
     index: int
     source: str
@@ -48,6 +55,7 @@ class Cut:
     fps: Fraction
     zoom: float
     anchor: tuple[float, float]
+    reframes: tuple[Reframe, ...]
     note: str
 
     @property
@@ -84,6 +92,25 @@ def parse_zoom(value: object, where: str) -> float:
     return zoom
 
 
+def parse_reframes(value: object, duration: float, where: str) -> tuple[Reframe, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        sys.exit(f"{where}: reframes must be a list of {{at_s, zoom, ms}}")
+    reframes: list[Reframe] = []
+    for i, r in enumerate(value):
+        here = f"{where} reframe {i}"
+        if not isinstance(r, dict) or "at_s" not in r or "zoom" not in r:
+            sys.exit(f"{here}: needs at_s and zoom")
+        reframe = Reframe(at=float(r["at_s"]), zoom=parse_zoom(r["zoom"], here), ms=int(r.get("ms", 450)))
+        if reframe.ms < 1 or not 0.0 <= reframe.at < duration:
+            sys.exit(f"{here}: at_s must fall inside the range and ms must be positive")
+        if reframes and reframe.at < reframes[-1].at + reframes[-1].ms / 1000:
+            sys.exit(f"{here}: starts before the previous reframe ends")
+        reframes.append(reframe)
+    return tuple(reframes)
+
+
 def edl_fps(edl: dict) -> Fraction:
     value = edl.get("fps")
     if value is None:
@@ -114,6 +141,7 @@ def plan_cuts(edl: dict, edit_dir: Path) -> list[Cut]:
             fps=fps,
             zoom=parse_zoom(r.get("zoom"), where),
             anchor=parse_anchor(r.get("anchor"), where),
+            reframes=parse_reframes(r.get("reframes"), float(frames / fps), where),
             note=r.get("beat") or r.get("note") or "",
         ))
         offset += frames

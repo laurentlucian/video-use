@@ -309,23 +309,34 @@ Match the source unless the user asked for something specific. Common targets: `
     {"source": "C0103", "start": 2.42, "end": 6.85,
      "beat": "HOOK", "quote": "...", "reason": "Cleanest delivery, stops before slip at 38.46."},
     {"source": "C0108", "start": 14.30, "end": 28.90, "zoom": 1.25, "anchor": [0.5, 0.4],
-     "beat": "SOLUTION", "quote": "...", "reason": "Only take without the false start."}
+     "beat": "SOLUTION", "quote": "...", "reason": "Only take without the false start."},
+    {"source": "C0108", "start": 31.00, "end": 36.20, "anchor": [0.5, 0.42],
+     "reframes": [{"at_s": 0.5, "zoom": 1.12, "ms": 450}, {"at_s": 3.0, "zoom": 1.0, "ms": 450}]}
   ],
   "grade": "warm_cinematic",
   "audio_filter": "highpass=f=80,acompressor=threshold=-20dB:ratio=2.5",
   "replacements": {"Laude": "LOUD"},
   "overlays": [
     {"file": "animations/slot_1/render.mov", "start_in_output": 0.0, "duration": 5.0},
-    {"file": "animations/logo.png", "start_in_output": 80.0, "position": [0.5, 0.15], "scale": 0.5}
-  ]
+    {"file": "animations/logo.png", "start_in_output": 80.0, "position": [0.5, 0.15], "scale": 0.5},
+    {"file": "animations/cta.mov", "start_in_output": 88.0, "blur_base": {"px": 30, "ramp_ms": 250}}
+  ],
+  "music": {"file": "audio/bed.mp3", "start_s": 14.79, "gain_db": -16, "fade_in_ms": 100, "fade_out_ms": 400,
+            "duck": {"under_voice_db": 6, "attack_ms": 20, "release_ms": 300},
+            "automation": [{"at_s": 40.0, "gain_db": -16}, {"at_s": 40.4, "gain_db": -12}]},
+  "sfx": [{"file": "audio/pop.wav", "at_s": 12.345, "gain_db": -6}]
 }
 ```
 
 - `fps`: output frame rate (default 30, CFR). Each range's length snaps to whole frames (`round((end - start) * fps)`), so total duration is exact and A/V sync holds to the last segment.
 - `zoom` (default 1.0) punches in per range; it crops the full-res source, then scales, so a 1.35 zoom on 4K footage never upscales. `anchor` is the source point (fractions, default `[0.5, 0.5]`) that the crop centres on, clamped to the frame.
 - `grade` is a preset name, a raw ffmpeg filter, or `auto`. `audio_filter` is an ffmpeg audio chain applied per segment before the fades.
-- `replacements` applies to caption text only.
-- `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size. `hide_captions` (default `true`) clips captions out of the overlay window; set `false` for text-free b-roll.
+- `reframes` (optional, per range) are smooth zoom moves inside the range: each eases (cubic in-out) from the current zoom to `zoom` over `ms` (default 450), starting `at_s` seconds into the range. The range `zoom` is the starting value. Moves must not overlap. Use them for reframes and emphasis pushes; keep snap `zoom` changes for jump cuts.
+- `replacements` applies to caption text only. A key with spaces replaces a run of words (same word count on both sides), e.g. `{"streamer do zero": "Streamer do Zero"}`.
+- `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size. `hide_captions` (default `true`) clips captions out of the overlay window; set `false` for text-free b-roll. A video overlay without `duration` lasts its own clip length. `blur_base: {px, ramp_ms}` blurs the base video (gaussian sigma `px`) under that overlay's window, crossfading in and out over `ramp_ms`, before any overlay is drawn.
+- `music` is a bed mixed under the voice: `file`, `start_s` (offset into the track), `gain_db`, `fade_in_ms`, `fade_out_ms`. `automation` is a list of `{at_s, gain_db}` keyframes on the output timeline; the gain ramps linearly between them, starting from `gain_db` at 0 s, and holds after the last one (use it for swells). `duck: {under_voice_db, attack_ms, release_ms}` sidechain-ducks the bed by about `under_voice_db` while the voice plays.
+- `sfx` is a list of `{file, at_s, gain_db}` one-shots placed sample-accurately at `at_s` on the output timeline. Align the transient, not the file start: subtract the file's attack (first sample above peak − 30 dB) from the visual event time; for whooshes and risers align the peak.
+- With `music` or `sfx` the composite mixes voice, bed and effects to PCM, and loudnorm runs once on the full mix (−14 LUFS, −1 dBTP).
 
 ## Memory — `project.md`
 

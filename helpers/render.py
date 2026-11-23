@@ -11,6 +11,7 @@ from pathlib import Path
 from captions import DEFAULT_STYLE, build_ass, load_style
 from edl import Cut, ffmpeg_rate, load_edl, plan_cuts, resolve_path, total_frames
 from grade import auto_grade_for_clip, get_preset
+from mix import audio_mix
 from transcripts import resolve_transcripts_dir
 
 AUDIO_RATE = 48000
@@ -76,15 +77,42 @@ def resolve_grade_filter(grade_field: str | None) -> str:
     return grade_field
 
 
-def frame_filter(cut: Cut, size: tuple[int, int]) -> str:
+def aspect_crop(cut: Cut, size: tuple[int, int], zoom: float) -> str:
     w, h = size
-    crop_w = f"min(iw,ih*{w}/{h})/{cut.zoom}"
-    crop_h = f"min(iw,ih*{w}/{h})/{cut.zoom}*{h}/{w}"
+    crop_w = f"min(iw,ih*{w}/{h})/{zoom}"
+    crop_h = f"min(iw,ih*{w}/{h})/{zoom}*{h}/{w}"
     ax, ay = cut.anchor
     return (
         f"crop=w='{crop_w}':h='{crop_h}'"
-        f":x='max(0,min(iw-ow,iw*{ax}-ow/2))':y='max(0,min(ih-oh,ih*{ay}-oh/2))',"
-        f"scale={w}:{h}:flags=lanczos,setsar=1,fps={ffmpeg_rate(cut.fps)}"
+        f":x='max(0,min(iw-ow,iw*{ax}-ow/2))':y='max(0,min(ih-oh,ih*{ay}-oh/2))'"
+    )
+
+
+def eased(t: str, start: float, ms: int) -> str:
+    p = f"clip(({t}-{start:.6f})/{ms / 1000:.6f},0,1)"
+    return f"if(lt({p},0.5),4*pow({p},3),1-pow(2-2*{p},3)/2)"
+
+
+def zoom_expr(cut: Cut) -> str:
+    t = f"(on/{float(cut.fps):.6f})"
+    expr, current = f"{cut.zoom}", cut.zoom
+    for r in cut.reframes:
+        expr += f"+({r.zoom - current:.6f})*{eased(t, r.at, r.ms)}"
+        current = r.zoom
+    return expr
+
+
+def frame_filter(cut: Cut, size: tuple[int, int]) -> str:
+    w, h = size
+    rate = ffmpeg_rate(cut.fps)
+    if not cut.reframes:
+        return f"{aspect_crop(cut, size, cut.zoom)},scale={w}:{h}:flags=lanczos,setsar=1,fps={rate}"
+    ax, ay = cut.anchor
+    return (
+        f"fps={rate},{aspect_crop(cut, size, 1.0)},"
+        f"zoompan=z='{zoom_expr(cut)}'"
+        f":x='max(0,min(iw-iw/zoom,iw*{ax}-iw/zoom/2))':y='max(0,min(ih-ih/zoom,ih*{ay}-ih/zoom/2))'"
+        f":d=1:s={w}x{h}:fps={rate},setsar=1"
     )
 
 
@@ -165,7 +193,28 @@ def filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
-def overlay_window(ov: dict, index: int, total_s: float) -> tuple[float, float]:
+def media_duration(path: Path) -> float | None:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(path)],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        return float(out.stdout.strip())
+    except ValueError:
+        return None
+
+
+def with_clip_durations(overlays: list[dict], edit_dir: Path) -> list[dict]:
+    resolved = []
+    for ov in overlays:
+        path = resolve_path(ov["file"], edit_dir)
+        clip = None if "duration" in ov or path.suffix.lower() in STILL_SUFFIXES else media_duration(path)
+        resolved.append({**ov, "duration": clip} if clip else ov)
+    return resolved
+
+
+def overlay_window(
+ov: dict, index: int, total_s: float) -> tuple[float, float]:
     start = float(ov["start_in_output"])
     duration = min(float(ov.get("duration", total_s - start)), total_s - start)
     if duration <= 0:
@@ -185,23 +234,46 @@ def overlay_input(path: Path, fps: Fraction, duration: float) -> list[str]:
     return ["-i", str(path)]
 
 
+def blur_windows(overlays: list[dict], total_s: float, current: str) -> tuple[list[str], str]:
+    graph: list[str] = []
+    for idx, ov in enumerate(overlays):
+        blur = ov.get("blur_base")
+        if not blur:
+            continue
+        start, end = overlay_window(ov, idx, total_s)
+        ramp = max(float(blur.get("ramp_ms", 250)) / 1000, 1 / 1000)
+        fades = f"fade=t=in:st={start:.6f}:d={ramp:.6f}:alpha=1"
+        if end < total_s - 1e-6:
+            fades += f",fade=t=out:st={max(start, end - ramp):.6f}:d={ramp:.6f}:alpha=1"
+        graph.append(f"{current}split=2[bs{idx}][bb{idx}]")
+        graph.append(
+            f"[bb{idx}]trim=start={start:.6f}:end={end:.6f},gblur=sigma={float(blur.get('px', 30)):g},"
+            f"format=yuva420p,{fades}[bl{idx}]"
+        )
+        graph.append(f"[bs{idx}][bl{idx}]overlay=eof_action=pass:enable='between(t,{start:.6f},{end:.6f})'[bv{idx}]")
+        current = f"[bv{idx}]"
+    return graph, current
+
+
 def build_final_composite(
     base_path: Path,
     overlays: list[dict],
     captions: tuple[Path, Path] | None,
+    edl: dict,
     out_path: Path,
     edit_dir: Path,
     fps: Fraction,
     total_s: float,
     size: tuple[int, int],
 ) -> None:
-    if not overlays and captions is None:
+    mix = audio_mix(edl, edit_dir, len(overlays) + 1, total_s)
+    audio_codec = ["-c:a", "pcm_s24le"] if out_path.suffix.lower() == ".mov" else ["-c:a", "aac", "-b:a", "192k"]
+    if not overlays and captions is None and mix is None:
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", str(base_path), "-c", "copy", str(out_path)], check=True)
         return
 
     inputs = ["-i", str(base_path)]
-    graph: list[str] = []
-    current = "[0:v]"
+    graph, current = blur_windows(overlays, total_s, "[0:v]")
     w, h = size
     for idx, ov in enumerate(overlays, start=1):
         start, end = overlay_window(ov, idx - 1, total_s)
@@ -219,19 +291,23 @@ def build_final_composite(
         )
         current = f"[v{idx}]"
 
+    if mix is not None:
+        inputs += mix[0]
+        graph += mix[1]
+
     if captions is not None:
         ass_path, fonts_dir = captions
         graph.append(f"{current}subtitles=filename='{filter_path(ass_path)}':fontsdir='{filter_path(fonts_dir)}'[outv]")
     else:
         graph.append(f"{current}null[outv]")
 
-    print(f"compositing → {out_path.name}  (overlays: {len(overlays)}, captions: {'yes' if captions else 'no'})")
+    print(f"compositing → {out_path.name}  (overlays: {len(overlays)}, captions: {'yes' if captions else 'no'}, mix: {'yes' if mix else 'no'})")
     subprocess.run([
         "ffmpeg", "-y", "-v", "error", *inputs,
         "-filter_complex", ";".join(graph),
-        "-map", "[outv]", "-map", "0:a", "-frames:v", str(round(total_s * fps)),
+        "-map_chapters", "-1", "-map", "[outv]", "-map", mix[2] if mix else "0:a", "-frames:v", str(round(total_s * fps)),
         "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-pix_fmt", "yuv420p", "-r", ffmpeg_rate(fps),
-        "-c:a", "copy", "-movflags", "+faststart",
+        *(audio_codec if mix else ["-c:a", "copy"]), "-movflags", "+faststart",
         str(out_path),
     ], check=True)
 
@@ -271,7 +347,7 @@ def apply_loudnorm(input_path: Path, output_path: Path, two_pass: bool) -> None:
         )
     print(f"  loudnorm ({'2-pass' if measurement else '1-pass'}) → {output_path.name}")
     subprocess.run([
-        "ffmpeg", "-y", "-v", "error", "-i", str(input_path), "-c:v", "copy",
+        "ffmpeg", "-y", "-v", "error", "-i", str(input_path), "-c:v", "copy", "-map_chapters", "-1",
         "-af", f"{target},aresample={AUDIO_RATE}",
         "-c:a", "aac", "-b:a", "192k", "-ar", str(AUDIO_RATE), "-movflags", "+faststart",
         str(output_path),
@@ -315,7 +391,7 @@ def main() -> None:
     base_path = work_dir / ("base.mp4" if level == "final" else f"base_{level}.mp4")
     concat_segments(segments, base_path, work_dir)
 
-    overlays = edl.get("overlays") or []
+    overlays = with_clip_durations(edl.get("overlays") or [], edit_dir)
     captions = None
     if args.style is not None:
         style = load_style(args.style)
@@ -326,10 +402,10 @@ def main() -> None:
         captions = (ass_path, style.fonts_dir)
 
     if args.no_loudnorm:
-        build_final_composite(base_path, overlays, captions, out_path, edit_dir, fps, total_s, size)
+        build_final_composite(base_path, overlays, captions, edl, out_path, edit_dir, fps, total_s, size)
     else:
-        prenorm = out_path.with_suffix(".prenorm.mp4")
-        build_final_composite(base_path, overlays, captions, prenorm, edit_dir, fps, total_s, size)
+        prenorm = out_path.with_suffix(".prenorm.mov")
+        build_final_composite(base_path, overlays, captions, edl, prenorm, edit_dir, fps, total_s, size)
         apply_loudnorm(prenorm, out_path, two_pass=not args.draft)
         prenorm.unlink(missing_ok=True)
 
