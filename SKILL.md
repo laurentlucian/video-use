@@ -74,6 +74,7 @@ Helpers (`helpers/transcribe.py`, `helpers/render.py`, etc.) live alongside this
 - **`transcribe.py <video>`** — single-file transcription, Scribe-shaped JSON. `--engine auto|local|scribe` (default auto). `--num-speakers N` applies to Scribe only. Cached.
 - **`transcribe_batch.py <videos_dir>`** — whole-folder transcription. Scribe runs 4 parallel workers; local runs one file at a time on the GPU. Use for multi-take.
 - **`pack_transcripts.py --edit-dir <dir>`** — `transcripts/*.json` → `takes_packed.md` (phrase-level, break on silence ≥ 0.5s).
+- **`export_transcript.py <edit_dir>/transcripts/<name>.json`** — writes `<edit_dir>/exports/<name>.words.json` and `<name>.srt` (natural case). Hand these to ffmpeg-skill (`silence.py --words`, `caption.py --srt`) instead of transcribing again. Times follow the transcribed file: after a cut, run `transcribe.py` on the cut file and export again before captioning.
 - **`timeline_view.py <video> <start> <end>`** — filmstrip + waveform PNG. On-demand visual drill-down. **Not a scan tool** — use it at decision points, not constantly.
 - **`render.py <edl.json> -o <out>`** — per-segment extract → concat → overlays (PTS-shifted) → subtitles LAST. `--preview` for 720p fast. `--build-subtitles` to generate master.srt inline.
 - **`grade.py <in> -o <out>`** — ffmpeg filter chain grade. Presets + `--filter '<raw>'` for custom.
