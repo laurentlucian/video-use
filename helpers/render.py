@@ -275,7 +275,8 @@ def build_final_composite(
         return
 
     inputs = ["-i", str(base_path)]
-    graph, current = blur_windows(overlays, total_s, "[0:v]")
+    graph, current = blur_windows(overlays, total_s, "[base]")
+    graph.insert(0, "[0:v]setpts=PTS-STARTPTS[base]")
     w, h = size
     for idx, ov in enumerate(overlays, start=1):
         start, end = overlay_window(ov, idx - 1, total_s)
