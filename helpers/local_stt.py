@@ -5,8 +5,11 @@ import math
 import os
 import platform
 import sys
+import wave
 from functools import lru_cache
 from pathlib import Path
+
+import numpy as np
 
 MODEL = os.environ.get("VIDEO_USE_WHISPER_MODEL", "large-v3-turbo")
 DISFLUENCY_PROMPT = "Umm, uh, so, like, you know, I mean, hmm. Uh-huh. Yeah, um, okay, so uh."
@@ -68,8 +71,10 @@ def words_mlx(audio: Path, language: str | None) -> tuple[list[dict], str | None
 
 
 def words_faster_whisper(audio: Path, language: str | None) -> tuple[list[dict], str | None]:
+    with wave.open(str(audio), "rb") as w:
+        samples = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
     segments, info = faster_whisper_model().transcribe(
-        str(audio),
+        samples.astype(np.float32) / 32768.0,
         word_timestamps=True,
         initial_prompt=DISFLUENCY_PROMPT,
         hallucination_silence_threshold=HALLUCINATION_SILENCE_S,
