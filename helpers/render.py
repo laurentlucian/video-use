@@ -165,6 +165,18 @@ def filter_path(path: Path) -> str:
     return str(path.resolve()).replace("\\", "/").replace(":", r"\:").replace("'", r"\'")
 
 
+def overlay_window(ov: dict, index: int, total_s: float) -> tuple[float, float]:
+    start = float(ov["start_in_output"])
+    duration = min(float(ov.get("duration", total_s - start)), total_s - start)
+    if duration <= 0:
+        sys.exit(f"overlay {index} starts at or after the end of the output ({total_s:.3f}s)")
+    return start, start + duration
+
+
+def caption_holes(overlays: list[dict], total_s: float) -> list[tuple[float, float]]:
+    return [overlay_window(ov, i, total_s) for i, ov in enumerate(overlays) if ov.get("hide_captions", True)]
+
+
 def overlay_input(path: Path, fps: Fraction, duration: float) -> list[str]:
     if path.suffix.lower() in STILL_SUFFIXES:
         return ["-loop", "1", "-framerate", ffmpeg_rate(fps), "-t", f"{duration:.6f}", "-i", str(path)]
@@ -192,10 +204,8 @@ def build_final_composite(
     current = "[0:v]"
     w, h = size
     for idx, ov in enumerate(overlays, start=1):
-        start = float(ov["start_in_output"])
-        duration = min(float(ov.get("duration", total_s - start)), total_s - start)
-        if duration <= 0:
-            sys.exit(f"overlay {idx - 1} starts at or after the end of the output ({total_s:.3f}s)")
+        start, end = overlay_window(ov, idx - 1, total_s)
+        duration = end - start
         inputs += overlay_input(resolve_path(ov["file"], edit_dir), fps, duration)
         scale = float(ov.get("scale", 1.0))
         px, py = ov.get("position", [0.5, 0.5])
@@ -305,15 +315,16 @@ def main() -> None:
     base_path = work_dir / ("base.mp4" if level == "final" else f"base_{level}.mp4")
     concat_segments(segments, base_path, work_dir)
 
+    overlays = edl.get("overlays") or []
     captions = None
     if args.style is not None:
         style = load_style(args.style)
         ass_path = work_dir / "captions.ass"
         build_ass(cuts, resolve_transcripts_dir(edit_dir, args.transcripts_dir), style,
-                  edl.get("replacements") or {}, not args.no_refine_onsets, ass_path)
+                  edl.get("replacements") or {}, not args.no_refine_onsets,
+                  caption_holes(overlays, total_s), ass_path)
         captions = (ass_path, style.fonts_dir)
 
-    overlays = edl.get("overlays") or []
     if args.no_loudnorm:
         build_final_composite(base_path, overlays, captions, out_path, edit_dir, fps, total_s, size)
     else:

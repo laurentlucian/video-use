@@ -187,9 +187,13 @@ Captions have three dimensions worth reasoning about: **chunking** (1/2/3/senten
 
 `render.py --style <style.json>` is the one caption path. It writes `captions.ass` from the transcripts and the frame-snapped cuts, then burns it LAST:
 
-- Word-by-word: each cue holds up to `words_max` words and breaks on punctuation, on pauses ≥ 0.3 s, and when the next word would pass `max_width`. The active word takes `active_color` and `active_scale`; each cue pops in from `pop_from` scale over `pop_ms`.
-- Word starts are refined to the audio onset (`onsets.py`), so the highlight lands on the voice, not on the pause before it.
-- EDL `replacements` fix ASR spellings in captions, whole word, case-insensitive: `{"Laude": "LOUD"}`.
+- Chunking: the transcript splits into phrases at punctuation and at pauses ≥ 0.3 s. A phrase shorter than `words_min` merges with its neighbour when the gap is under 0.6 s. Each group then splits evenly into cues of at most `words_max` words, and each cue lays out on at most `lines_max` lines of `max_width` (most balanced break). A cue that cannot fit shrinks.
+- Two modes. `active_color` set: the spoken word takes `active_color` and `active_scale` (word-by-word karaoke). `active_color` null or absent: each cue is a plain line, no per-word colour or scale. Each cue pops in from `pop_from` scale over `pop_ms`. Cue centre: `x` (default 0.5), `y`.
+- Look: `outline` px; `shadow` (offset down, px), `shadow_blur` (CSS-style px), `shadow_alpha`. The shadow is its own ASS layer under the text, so the blur never softens the fill. Font `tracking` (em fraction) maps to ASS letter spacing.
+- Punctuation: quotes and ASS control characters are always removed. `strip_end_punctuation` (default true for `case: "lower"`) removes `. , ; : ! ? …` at the end of each cue; mid-cue commas stay. `end_punctuation_keep: "?"` keeps question marks.
+- Overlays hide captions: every EDL overlay clips captions out of its window, unless the overlay sets `"hide_captions": false` (use that for text-free b-roll). A cue that runs into an overlay ends at the overlay start; a remainder after the overlay shows again if it lasts ≥ 0.2 s.
+- Word starts are refined to the audio onset (`onsets.py`), so cues land on the voice, not on the pause before it.
+- EDL `replacements` fix ASR spellings in captions, whole word, case-insensitive, applied after `case` so proper names keep their case: `{"Laude": "LOUD", "LOUD": "LOUD"}`.
 - The caption font file is passed to libass (`fontsdir`), so a font that is not installed still renders. The renderer reads the face name and weight from the file itself.
 
 The style JSON is shared with motion graphics (Remotion overlays). Units are px on the `canvas`, fractions of canvas width/height, `#RRGGBB`, ms. `styles/default.json` is a worked example (Montserrat Black 96, white, 8 px outline, green active word, y = 0.64). Font paths are relative to the style file:
@@ -207,7 +211,7 @@ The style JSON is shared with motion graphics (Remotion overlays). Units are px 
 }
 ```
 
-For narrative or documentary work, copy the style and change it: natural case, `words_max` 5–7, `active_color` equal to `text`, `pop_ms` 0. Vertical-social UI covers the bottom ~25% of the frame, so keep `y` ≤ ~0.7. Hard rules: captions LAST (Rule 1), output-timeline offsets (Rule 5).
+For sentence captions (paid social, narrative, documentary), copy the style and change it: `case` lower or natural, `words_min` 4, `words_max` 7, `lines_max` 2, `active_color` null, `outline` 0, `shadow` 3, `shadow_blur` 8, `shadow_alpha` 0.5, a tight bold sans at about 2.4% of the height. Use a static TTF; libass renders a variable font at its default instance. Vertical-social UI covers the bottom ~25% of the frame, so keep `y` ≤ ~0.7. Hard rules: captions LAST (Rule 1), output-timeline offsets (Rule 5).
 
 ## Animations (when requested)
 
@@ -321,7 +325,7 @@ Match the source unless the user asked for something specific. Common targets: `
 - `zoom` (default 1.0) punches in per range; it crops the full-res source, then scales, so a 1.35 zoom on 4K footage never upscales. `anchor` is the source point (fractions, default `[0.5, 0.5]`) that the crop centres on, clamped to the frame.
 - `grade` is a preset name, a raw ffmpeg filter, or `auto`. `audio_filter` is an ffmpeg audio chain applied per segment before the fades.
 - `replacements` applies to caption text only.
-- `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size.
+- `overlays` are rendered clips or stills. Each one is trimmed to its window (`duration` defaults to the end of the output), so a long clip never extends the output. Alpha works for ProRes 4444 / qtrle `.mov`, VP9 `.webm`, and PNG. `position` is where the overlay's centre lands (fractions of the output, default centre); `scale` multiplies its own size. `hide_captions` (default `true`) clips captions out of the overlay window; set `false` for text-free b-roll.
 
 ## Memory — `project.md`
 
