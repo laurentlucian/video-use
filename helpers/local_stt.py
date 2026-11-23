@@ -12,7 +12,11 @@ from pathlib import Path
 import numpy as np
 
 MODEL = os.environ.get("VIDEO_USE_WHISPER_MODEL", "large-v3-turbo")
-DISFLUENCY_PROMPT = "Umm, uh, so, like, you know, I mean, hmm. Uh-huh. Yeah, um, okay, so uh."
+DISFLUENCY_PROMPTS = {
+    "en": "Umm, uh, so, like, you know, I mean, hmm. Uh-huh. Yeah, um, okay, so uh.",
+    "pt": "Ahn, é, tipo, né, então, éé, hum, sabe, tipo assim, ahn, aí, então né.",
+    "es": "Eh, este, o sea, pues, bueno, mmm, ¿sabes?, eh, este.",
+}
 HALLUCINATION_SILENCE_S = 2.0
 
 
@@ -58,7 +62,7 @@ def words_mlx(audio: Path, language: str | None) -> tuple[list[dict], str | None
         str(audio),
         path_or_hf_repo=f"mlx-community/whisper-{MODEL}",
         word_timestamps=True,
-        initial_prompt=DISFLUENCY_PROMPT,
+        initial_prompt=DISFLUENCY_PROMPTS.get(language or ""),
         hallucination_silence_threshold=HALLUCINATION_SILENCE_S,
         language=language,
     )
@@ -76,7 +80,7 @@ def words_faster_whisper(audio: Path, language: str | None) -> tuple[list[dict],
     segments, info = faster_whisper_model().transcribe(
         samples.astype(np.float32) / 32768.0,
         word_timestamps=True,
-        initial_prompt=DISFLUENCY_PROMPT,
+        initial_prompt=DISFLUENCY_PROMPTS.get(language or ""),
         hallucination_silence_threshold=HALLUCINATION_SILENCE_S,
         language=language,
     )
