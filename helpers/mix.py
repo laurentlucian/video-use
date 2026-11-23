@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import sys
 from itertools import pairwise
 from pathlib import Path
@@ -40,6 +41,24 @@ def music_chain(music: dict, total_s: float) -> str:
     return ",".join(chain)
 
 
+def pan_gains(pan: float) -> tuple[float, float]:
+    angle = (max(-1.0, min(1.0, pan)) + 1) * math.pi / 4
+    return math.cos(angle) * math.sqrt(2), math.sin(angle) * math.sqrt(2)
+
+
+def sfx_chain(fx: dict) -> str:
+    chain = [STEREO, f"volume={float(fx.get('gain_db', 0.0)):g}dB"]
+    if fx.get("duration_s") is not None:
+        chain.append(f"atrim=duration={float(fx['duration_s']):.6f}")
+    fade = float(fx.get("fade_out_ms", 0)) / 1000
+    if fade > 0:
+        chain.append(f"areverse,afade=t=in:d={fade:.6f},areverse")
+    if fx.get("pan"):
+        left, right = pan_gains(float(fx["pan"]))
+        chain.append(f"pan=stereo|c0={left:.4f}*c0|c1={right:.4f}*c1")
+    return ",".join(chain)
+
+
 def audio_mix(edl: dict, edit_dir: Path, first_input: int, total_s: float) -> tuple[list[str], list[str], str] | None:
     music = edl.get("music")
     sfx = edl.get("sfx") or []
@@ -72,10 +91,7 @@ def audio_mix(edl: dict, edit_dir: Path, first_input: int, total_s: float) -> tu
         if not 0.0 <= at < total_s:
             sys.exit(f"sfx {i}: at_s {at:.3f} is outside the output (0..{total_s:.3f}s)")
         inputs += ["-i", str(resolve_path(fx["file"], edit_dir))]
-        graph.append(
-            f"[{index}:a]{STEREO},volume={float(fx.get('gain_db', 0.0)):g}dB,"
-            f"adelay=delays={round(at * AUDIO_RATE)}S:all=1[fx{i}]"
-        )
+        graph.append(f"[{index}:a]{sfx_chain(fx)},adelay=delays={round(at * AUDIO_RATE)}S:all=1[fx{i}]")
         stems.append(f"[fx{i}]")
         index += 1
 
