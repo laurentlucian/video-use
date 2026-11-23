@@ -236,24 +236,42 @@ def overlay_input(path: Path, fps: Fraction, duration: float) -> list[str]:
     return ["-i", str(path)]
 
 
-def blur_windows(overlays: list[dict], total_s: float, current: str) -> tuple[list[str], str]:
+def rounded_alpha(radius: int) -> str:
+    r = max(0, radius)
+    dx = f"max(max({r}-X,X-(W-1-{r})),0)"
+    dy = f"max(max({r}-Y,Y-(H-1-{r})),0)"
+    return f"geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='255*lte({dx}*{dx}+{dy}*{dy},{r * r})'"
+
+
+def blur_windows(overlays: list[dict], total_s: float, current: str, size: tuple[int, int]) -> tuple[list[str], str]:
     graph: list[str] = []
+    w, h = size
     for idx, ov in enumerate(overlays):
-        blur = ov.get("blur_base")
-        if not blur:
+        spec = ov.get("blur_base")
+        if not spec:
             continue
-        start, end = overlay_window(ov, idx, total_s)
-        ramp = max(float(blur.get("ramp_ms", 250)) / 1000, 1 / 1000)
-        fades = f"fade=t=in:st={start:.6f}:d={ramp:.6f}:alpha=1"
-        if end < total_s - 1e-6:
-            fades += f",fade=t=out:st={max(start, end - ramp):.6f}:d={ramp:.6f}:alpha=1"
-        graph.append(f"{current}split=2[bs{idx}][bb{idx}]")
-        graph.append(
-            f"[bb{idx}]trim=start={start:.6f}:end={end:.6f},gblur=sigma={float(blur.get('px', 30)):g},"
-            f"format=yuva420p,{fades}[bl{idx}]"
-        )
-        graph.append(f"[bs{idx}][bl{idx}]overlay=eof_action=pass:enable='between(t,{start:.6f},{end:.6f})'[bv{idx}]")
-        current = f"[bv{idx}]"
+        window_start, end = overlay_window(ov, idx, total_s)
+        for k, blur in enumerate(spec if isinstance(spec, list) else [spec]):
+            tag = f"{idx}_{k}"
+            start = window_start + float(blur.get("from_s", 0.0))
+            ramp = max(float(blur.get("ramp_ms", 250)) / 1000, 1 / 1000)
+            fades = f"fade=t=in:st={start:.6f}:d={ramp:.6f}:alpha=1"
+            if end < total_s - 1e-6:
+                fades += f",fade=t=out:st={max(start, end - ramp):.6f}:d={ramp:.6f}:alpha=1"
+            region = blur.get("region")
+            rx, ry, rw, rh = (0, 0, w, h) if not region else (
+                round(region[0] * w), round(region[1] * h), round(region[2] * w), round(region[3] * h))
+            crop = "" if not region else f"crop={rw}:{rh}:{rx}:{ry},"
+            shape = "format=yuva420p" if not region else f"format=yuva444p,{rounded_alpha(int(blur.get('radius_px', 0)))}"
+            graph.append(f"{current}split=2[bs{tag}][bb{tag}]")
+            graph.append(
+                f"[bb{tag}]trim=start={start:.6f}:end={end:.6f},{crop}gblur=sigma={float(blur.get('px', 30)):g},"
+                f"{shape},{fades}[bl{tag}]"
+            )
+            graph.append(
+                f"[bs{tag}][bl{tag}]overlay=x={rx}:y={ry}:eof_action=pass:enable='between(t,{start:.6f},{end:.6f})'[bv{tag}]"
+            )
+            current = f"[bv{tag}]"
     return graph, current
 
 
@@ -275,7 +293,7 @@ def build_final_composite(
         return
 
     inputs = ["-i", str(base_path)]
-    graph, current = blur_windows(overlays, total_s, "[base]")
+    graph, current = blur_windows(overlays, total_s, "[base]", size)
     graph.insert(0, "[0:v]setpts=PTS-STARTPTS[base]")
     w, h = size
     for idx, ov in enumerate(overlays, start=1):
