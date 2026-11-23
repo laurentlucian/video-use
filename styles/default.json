@@ -1,0 +1,17 @@
+{
+  "canvas": {"w": 1080, "h": 1920, "fps": 30},
+  "colors": {"accent": "#00EE22", "dark": "#151515", "light": "#F0EFED", "text": "#FFFFFF", "outline": "#000000"},
+  "fonts": {
+    "caption": {"family": "Montserrat", "file": "assets/fonts/Montserrat-Black.ttf", "weight": 900},
+    "display": {"family": "Montserrat", "file": "assets/fonts/Montserrat-ExtraBold.ttf", "weight": 800}
+  },
+  "captions": {
+    "size": 96, "case": "upper", "words_max": 3, "max_width": 0.86, "y": 0.64,
+    "outline": 8, "shadow": 4, "shadow_alpha": 0.6,
+    "active_color": "#00EE22", "active_scale": 1.1,
+    "pop_ms": 100, "pop_from": 0.8,
+    "emphasis_words": ["LOUD", "STREAMER DO ZERO", "45% OFF", "7 DIAS"]
+  },
+  "punch_in": {"max_zoom": 1.35, "default_zoom": 1.15, "ease_ms": 0},
+  "safe_zone": {"top": 0.12, "bottom": 0.22, "left": 0.06, "right": 0.16}
+}
