@@ -14,8 +14,7 @@ Usage:
     python helpers/timeline_view.py <video> <start> <end>
     python helpers/timeline_view.py <video> <start> <end> -o out.png
     python helpers/timeline_view.py <video> <start> <end> --n-frames 12
-    python helpers/timeline_view.py <video> <start> <end> --transcript <path>
-    python helpers/timeline_view.py --edl <edl.json>   (full-project view — not yet)
+    python helpers/timeline_view.py <video> <start> <end> --transcripts-dir <dir>
 """
 
 from __future__ import annotations
@@ -29,6 +28,8 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+
+from transcripts import resolve_transcripts_dir
 
 
 # -------- Frame extraction ---------------------------------------------------
@@ -332,51 +333,27 @@ def render_timeline(
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Filmstrip + waveform composite for a video range")
-    ap.add_argument("video", type=Path, nargs="?", help="Source video")
-    ap.add_argument("start", type=float, nargs="?", help="Start time in seconds")
-    ap.add_argument("end", type=float, nargs="?", help="End time in seconds")
+    ap.add_argument("video", type=Path, help="Video file")
+    ap.add_argument("start", type=float, help="Start time in seconds")
+    ap.add_argument("end", type=float, help="End time in seconds")
     ap.add_argument("-o", "--output", type=Path, default=None, help="Output PNG path")
     ap.add_argument("--n-frames", type=int, default=10, help="Number of frames in the filmstrip (default 10)")
-    ap.add_argument(
-        "--transcript",
-        type=Path,
-        default=None,
-        help="Path to transcript.json for word labels + silence shading. "
-             "If omitted, will auto-resolve to <video_parent>/edit/transcripts/<video_stem>.json",
-    )
-    ap.add_argument(
-        "--edl",
-        type=Path,
-        default=None,
-        help="(Not yet implemented) Render a full-project timeline from an EDL",
-    )
+    ap.add_argument("--edit-dir", type=Path, default=None, help="Edit directory (default: <video_parent>/edit)")
+    ap.add_argument("--transcripts-dir", type=Path, default=None,
+                    help="Transcript JSON directory (default: <edit_dir>/transcripts); reads <video_stem>.json")
+    ap.add_argument("--transcript", type=Path, default=None, help="Explicit transcript JSON file")
     args = ap.parse_args()
-
-    if args.edl:
-        sys.exit("--edl mode is not implemented yet; use range mode")
-
-    if not args.video or args.start is None or args.end is None:
-        ap.error("video, start, and end are required")
 
     video = args.video.resolve()
     if not video.exists():
         sys.exit(f"video not found: {video}")
-
     if args.end <= args.start:
         sys.exit("end must be > start")
 
-    # Auto-resolve transcript if not given
-    transcript = args.transcript
-    if transcript is None:
-        auto = video.parent / "edit" / "transcripts" / f"{video.stem}.json"
-        if auto.exists():
-            transcript = auto
+    edit_dir = (args.edit_dir or video.parent / "edit").resolve()
+    transcript = args.transcript or resolve_transcripts_dir(edit_dir, args.transcripts_dir) / f"{video.stem}.json"
 
-    out_path = args.output
-    if out_path is None:
-        out_dir = video.parent / "edit" / "verify"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / f"{video.stem}_{args.start:.2f}-{args.end:.2f}.png"
+    out_path = args.output or edit_dir / "verify" / f"{video.stem}_{args.start:.2f}-{args.end:.2f}.png"
 
     render_timeline(
         video=video,
